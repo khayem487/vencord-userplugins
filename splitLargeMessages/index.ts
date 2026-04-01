@@ -21,12 +21,22 @@ const settings = definePluginSettings({
     },
     splitOnWordBoundary: {
         type: OptionType.BOOLEAN,
-        description: "Prefer splitting on newlines/spaces when possible",
+        description: "Prefer splitting on delimiters when possible",
+        default: true
+    },
+    preferEmptyLineSplit: {
+        type: OptionType.BOOLEAN,
+        description: "Prefer splitting on empty lines first, then newline, then space",
         default: true
     },
     queueRemainingOnPaste: {
         type: OptionType.BOOLEAN,
-        description: "When oversized text is pasted, insert first chunk and auto-send remaining chunks after first send",
+        description: "When oversized text is pasted, insert first chunk and queue remaining chunks",
+        default: true
+    },
+    autoSendQueuedChunks: {
+        type: OptionType.BOOLEAN,
+        description: "When queued chunks exist, auto-send all after first Enter (disable to review/edit each next chunk manually)",
         default: true
     },
     delayMs: {
@@ -56,7 +66,7 @@ function sleep(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
-function splitContent(content: string, maxLen: number, wordBoundary: boolean) {
+function splitContent(content: string, maxLen: number, wordBoundary: boolean, preferEmptyLineSplit: boolean) {
     const parts: string[] = [];
     let remaining = content;
 
@@ -65,12 +75,20 @@ function splitContent(content: string, maxLen: number, wordBoundary: boolean) {
 
         if (wordBoundary) {
             const slice = remaining.slice(0, maxLen);
+            const doubleNewLineIdx = preferEmptyLineSplit
+                ? Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf("\r\n\r\n"))
+                : -1;
             const newLineIdx = slice.lastIndexOf("\n");
             const spaceIdx = slice.lastIndexOf(" ");
-            const candidate = Math.max(newLineIdx, spaceIdx);
+
+            const candidate = Math.max(doubleNewLineIdx, newLineIdx, spaceIdx);
 
             if (candidate > Math.floor(maxLen * 0.4)) {
-                cut = candidate + (slice[candidate] === "\n" ? 1 : 0);
+                if (candidate === doubleNewLineIdx) {
+                    cut = candidate + (slice.startsWith("\r\n\r\n", candidate) ? 4 : 2);
+                } else {
+                    cut = candidate + (slice[candidate] === "\n" ? 1 : 0);
+                }
             }
         }
 
@@ -160,7 +178,7 @@ export default definePlugin({
 
             e.preventDefault();
 
-            const chunks = splitContent(text, maxLen, this.settings.store.splitOnWordBoundary);
+            const chunks = splitContent(text, maxLen, this.settings.store.splitOnWordBoundary, this.settings.store.preferEmptyLineSplit);
             const [first, ...remaining] = chunks;
 
             insertTextIntoChatInputBox(first);
@@ -201,16 +219,30 @@ export default definePlugin({
                     return sent;
                 }
 
-                await this._sendChunks(channelId, queued.remaining, { ...data }, waitForChannelReady, {
-                    ...options,
-                    messageReference: null,
-                    allowedMentions: {
-                        ...(options?.allowedMentions ?? {}),
-                        replied_user: false
-                    }
-                });
+                if (this.settings.store.autoSendQueuedChunks) {
+                    await this._sendChunks(channelId, queued.remaining, { ...data }, waitForChannelReady, {
+                        ...options,
+                        messageReference: null,
+                        allowedMentions: {
+                            ...(options?.allowedMentions ?? {}),
+                            replied_user: false
+                        }
+                    });
 
-                this._queuedByChannel.delete(channelId);
+                    this._queuedByChannel.delete(channelId);
+                } else {
+                    const [next, ...rest] = queued.remaining;
+                    if (next) {
+                        insertTextIntoChatInputBox(next);
+                        this._queuedByChannel.set(channelId, {
+                            firstChunk: next,
+                            remaining: rest
+                        });
+                    } else {
+                        this._queuedByChannel.delete(channelId);
+                    }
+                }
+
                 return sent;
             }
 
@@ -219,7 +251,7 @@ export default definePlugin({
                 return original(channelId, data, waitForChannelReady, options);
             }
 
-            const chunks = splitContent(content, maxLen, this.settings.store.splitOnWordBoundary);
+            const chunks = splitContent(content, maxLen, this.settings.store.splitOnWordBoundary, this.settings.store.preferEmptyLineSplit);
 
             if (chunks.length <= 1) {
                 return original(channelId, data, waitForChannelReady, options);
