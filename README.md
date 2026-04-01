@@ -1,38 +1,22 @@
-# Vencord User Plugins (Khayem)
+# Vencord Userplugins by Khayem
 
-Private collection of custom Vencord plugins.
+Small collection of unofficial Vencord userplugins.
 
 ## Plugins
 
-- `pdfViewer` — Restored and enhanced PDF preview plugin for Vencord.
-  - See: [`pdfViewer/README.md`](./pdfViewer/README.md)
-- `splitLargeMessages` — Auto-splits oversized messages into sequential chunks before sending.
-  - See: [`splitLargeMessages/README.md`](./splitLargeMessages/README.md)
+- **PdfViewer** → inline PDF preview in Discord (scroll + zoom)
+- **SplitLargeMessages** → keep long text editable, split on send
 
-## Structure
+## Quick install
 
-```
-vencord-userplugins/
-  pdfViewer/
-    index.tsx
-    native.ts
-    cache.ts
-    pdfViewer.css
-```
-
-## Install (local)
-
-1. Clone/copy this repo.
-2. Copy plugin folder(s) into your Vencord source repo at:
-   `src/userplugins/<pluginName>`
-3. Build + inject from Vencord source:
+1. Copy a plugin folder into your Vencord source at `src/userplugins/<pluginName>`
+2. Build + inject:
 
 ```powershell
 corepack pnpm build
 corepack pnpm inject
 ```
 
-## Notes
+## License
 
-- This repo tracks only custom userplugins (not the full Vencord source).
-- Keep plugin names stable if native helper names depend on them.
+AGPL-3.0 (see `LICENSE`).
