@@ -7,7 +7,7 @@ import { definePluginSettings } from "@api/Settings";
 import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { MessageActions, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
+import { MessageActions, showToast, Toasts } from "@webpack/common";
 
 const settings = definePluginSettings({
     maxMessageLength: {
@@ -19,24 +19,19 @@ const settings = definePluginSettings({
         maxValue: 4000,
         stickToMarkers: false
     },
-    splitOnWordBoundary: {
+    pasteKeepWholeMessage: {
         type: OptionType.BOOLEAN,
-        description: "Prefer splitting on delimiters when possible",
+        description: "On paste > limit, keep full text in input for editing. Split only when sending.",
         default: true
     },
-    preferEmptyLineSplit: {
+    enableCustomSplitCommand: {
         type: OptionType.BOOLEAN,
-        description: "Prefer splitting on empty lines first, then newline, then space",
+        description: "Enable /split command to define your own delimiter",
         default: true
     },
-    queueRemainingOnPaste: {
+    emptyLinePriorityOnly: {
         type: OptionType.BOOLEAN,
-        description: "When oversized text is pasted, insert first chunk and queue remaining chunks",
-        default: true
-    },
-    autoSendQueuedChunks: {
-        type: OptionType.BOOLEAN,
-        description: "When queued chunks exist, auto-send all after first Enter (disable to review/edit each next chunk manually)",
+        description: "Default splitting prioritizes empty lines only (\n\n). If none found, fallback to hard cut.",
         default: true
     },
     delayMs: {
@@ -57,56 +52,74 @@ const settings = definePluginSettings({
 
 type SendMessage = typeof MessageActions.sendMessage;
 
-type QueuedPaste = {
-    firstChunk: string;
-    remaining: string[];
-};
-
 function sleep(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
-function splitContent(content: string, maxLen: number, wordBoundary: boolean, preferEmptyLineSplit: boolean) {
+function normalizeNewlines(text: string) {
+    return text.replace(/\r\n/g, "\n");
+}
+
+function splitByEmptyLineOrHardCut(content: string, maxLen: number) {
     const parts: string[] = [];
     let remaining = content;
 
     while (remaining.length > maxLen) {
+        const slice = remaining.slice(0, maxLen);
+        const idx = slice.lastIndexOf("\n\n");
+
         let cut = maxLen;
-
-        if (wordBoundary) {
-            const slice = remaining.slice(0, maxLen);
-            const doubleNewLineIdx = preferEmptyLineSplit
-                ? Math.max(slice.lastIndexOf("\n\n"), slice.lastIndexOf("\r\n\r\n"))
-                : -1;
-            const newLineIdx = slice.lastIndexOf("\n");
-            const spaceIdx = slice.lastIndexOf(" ");
-
-            const candidate = Math.max(doubleNewLineIdx, newLineIdx, spaceIdx);
-
-            if (candidate > Math.floor(maxLen * 0.4)) {
-                if (candidate === doubleNewLineIdx) {
-                    cut = candidate + (slice.startsWith("\r\n\r\n", candidate) ? 4 : 2);
-                } else {
-                    cut = candidate + (slice[candidate] === "\n" ? 1 : 0);
-                }
-            }
+        if (idx > Math.floor(maxLen * 0.35)) {
+            cut = idx + 2;
         }
 
-        let part = remaining.slice(0, cut);
-        if (wordBoundary) part = part.trimEnd();
-
+        let part = remaining.slice(0, cut).trimEnd();
         if (!part.length) {
             part = remaining.slice(0, maxLen);
             cut = maxLen;
         }
 
         parts.push(part);
-        remaining = remaining.slice(cut);
-        if (wordBoundary) remaining = remaining.trimStart();
+        remaining = remaining.slice(cut).trimStart();
     }
 
     if (remaining.length) parts.push(remaining);
     return parts;
+}
+
+function splitByDelimiter(body: string, delimiter: string, maxLen: number) {
+    const groups = body.split(delimiter).map(s => s.trim()).filter(Boolean);
+    const out: string[] = [];
+
+    for (const group of groups) {
+        if (group.length <= maxLen) {
+            out.push(group);
+        } else {
+            out.push(...splitByEmptyLineOrHardCut(group, maxLen));
+        }
+    }
+
+    return out.length ? out : [body];
+}
+
+function parseCustomSplit(content: string) {
+    const normalized = normalizeNewlines(content);
+    if (!normalized.startsWith("/split")) return null;
+
+    const firstNl = normalized.indexOf("\n");
+    if (firstNl < 0) return null;
+
+    const header = normalized.slice(0, firstNl).trim();
+    const body = normalized.slice(firstNl + 1);
+
+    const delimiter = header === "/split"
+        ? "\n\n"
+        : header.replace(/^\/split\s+/, "");
+
+    return {
+        body,
+        delimiter: delimiter.length ? delimiter : "\n\n"
+    };
 }
 
 function looksLikeChatInput(target: EventTarget | null) {
@@ -128,7 +141,6 @@ export default definePlugin({
 
     _originalSend: null as SendMessage | null,
     _onPaste: null as ((e: ClipboardEvent) => void) | null,
-    _queuedByChannel: new Map<string, QueuedPaste>(),
 
     async _sendChunks(channelId: string, chunks: string[], data: any, waitForChannelReady?: boolean, options?: any) {
         const original = this._originalSend;
@@ -170,32 +182,19 @@ export default definePlugin({
 
         this._onPaste = (e: ClipboardEvent) => {
             if (e.defaultPrevented) return;
+            if (!this.settings.store.pasteKeepWholeMessage) return;
             if (!looksLikeChatInput(e.target)) return;
 
             const text = e.clipboardData?.getData("text/plain") ?? "";
             const maxLen = this.settings.store.maxMessageLength;
             if (!text || text.length <= maxLen) return;
 
+            // Prevent Discord converting to message.txt while still keeping full editable text in input.
             e.preventDefault();
-
-            const chunks = splitContent(text, maxLen, this.settings.store.splitOnWordBoundary, this.settings.store.preferEmptyLineSplit);
-            const [first, ...remaining] = chunks;
-
-            insertTextIntoChatInputBox(first);
-
-            if (this.settings.store.queueRemainingOnPaste && remaining.length) {
-                const channelId = SelectedChannelStore.getChannelId();
-                if (channelId) {
-                    this._queuedByChannel.set(channelId, {
-                        firstChunk: first,
-                        remaining
-                    });
-                }
-            }
+            insertTextIntoChatInputBox(text);
 
             if (this.settings.store.showSplitToast) {
-                const extra = remaining.length ? ` + ${remaining.length} queued` : "";
-                showToast(`Pasted large text as chunks (${chunks.length} total${extra})`, Toasts.Type.MESSAGE);
+                showToast("Large paste kept in input. It will split when you send.", Toasts.Type.MESSAGE);
             }
         };
 
@@ -204,56 +203,30 @@ export default definePlugin({
         MessageActions.sendMessage = (async (channelId: string, data: any, waitForChannelReady?: boolean, options?: any) => {
             const content = typeof data?.content === "string" ? data.content : "";
             const maxLen = this.settings.store.maxMessageLength;
-
             const hasAttachments = Boolean(options?.attachmentsToUpload?.length || options?.stickerIds?.length || options?.poll);
 
-            // First, handle queued chunks from a prior oversized paste.
-            const queued = this._queuedByChannel.get(channelId);
-            if (queued && content) {
-                const sent = await original(channelId, data, waitForChannelReady, options);
-
-                // If user changed content completely, drop queue to avoid wrong spam.
-                const similarityHint = queued.firstChunk.slice(0, 24);
-                if (!content.includes(similarityHint)) {
-                    this._queuedByChannel.delete(channelId);
-                    return sent;
-                }
-
-                if (this.settings.store.autoSendQueuedChunks) {
-                    await this._sendChunks(channelId, queued.remaining, { ...data }, waitForChannelReady, {
-                        ...options,
-                        messageReference: null,
-                        allowedMentions: {
-                            ...(options?.allowedMentions ?? {}),
-                            replied_user: false
-                        }
-                    });
-
-                    this._queuedByChannel.delete(channelId);
-                } else {
-                    const [next, ...rest] = queued.remaining;
-                    if (next) {
-                        insertTextIntoChatInputBox(next);
-                        this._queuedByChannel.set(channelId, {
-                            firstChunk: next,
-                            remaining: rest
-                        });
-                    } else {
-                        this._queuedByChannel.delete(channelId);
-                    }
-                }
-
-                return sent;
-            }
-
-            // Then, classic oversized content split when user typed/pasted normally.
-            if (!content || content.length <= maxLen || hasAttachments) {
+            if (!content || hasAttachments) {
                 return original(channelId, data, waitForChannelReady, options);
             }
 
-            const chunks = splitContent(content, maxLen, this.settings.store.splitOnWordBoundary, this.settings.store.preferEmptyLineSplit);
+            let chunks: string[] | null = null;
 
-            if (chunks.length <= 1) {
+            if (this.settings.store.enableCustomSplitCommand) {
+                const parsed = parseCustomSplit(content);
+                if (parsed) {
+                    chunks = splitByDelimiter(parsed.body, parsed.delimiter, maxLen);
+                }
+            }
+
+            if (!chunks && content.length > maxLen) {
+                if (this.settings.store.emptyLinePriorityOnly) {
+                    chunks = splitByEmptyLineOrHardCut(content, maxLen);
+                } else {
+                    chunks = splitByEmptyLineOrHardCut(content, maxLen);
+                }
+            }
+
+            if (!chunks || chunks.length <= 1) {
                 return original(channelId, data, waitForChannelReady, options);
             }
 
@@ -270,8 +243,6 @@ export default definePlugin({
             document.removeEventListener("paste", this._onPaste, true);
             this._onPaste = null;
         }
-
-        this._queuedByChannel.clear();
 
         if (!this._originalSend) return;
         MessageActions.sendMessage = this._originalSend;
