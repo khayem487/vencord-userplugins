@@ -8,7 +8,7 @@ import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { MessageActions, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
+import { FluxDispatcher, MessageActions, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
 
 const settings = definePluginSettings({
     maxMessageLength: {
@@ -172,6 +172,9 @@ export default definePlugin({
     _originalSend: null as SendMessage | null,
     _onPaste: null as ((e: ClipboardEvent) => void) | null,
     _onKeyDown: null as ((e: KeyboardEvent) => void) | null,
+    _isEditing: false,
+    _onEditStart: null as ((payload?: any) => void) | null,
+    _onEditEnd: null as ((payload?: any) => void) | null,
 
     async _sendChunks(channelId: string, chunks: string[], data: any, waitForChannelReady?: boolean, options?: any) {
         const original = this._originalSend;
@@ -211,6 +214,15 @@ export default definePlugin({
         const original = MessageActions.sendMessage.bind(MessageActions) as SendMessage;
         this._originalSend = original;
 
+        this._onEditStart = () => {
+            this._isEditing = true;
+        };
+        this._onEditEnd = () => {
+            this._isEditing = false;
+        };
+        FluxDispatcher.subscribe("MESSAGE_START_EDIT", this._onEditStart);
+        FluxDispatcher.subscribe("MESSAGE_END_EDIT", this._onEditEnd);
+
         this._onPaste = (e: ClipboardEvent) => {
             if (e.defaultPrevented) return;
             if (!this.settings.store.pasteKeepWholeMessage) return;
@@ -237,7 +249,7 @@ export default definePlugin({
             if (!looksLikeChatInput(e.target)) return;
 
             // Never hijack Enter while editing an existing message.
-            if (EditStore?.isEditingAny?.()) return;
+            if (this._isEditing || EditStore?.isEditingAny?.()) return;
 
             const text = readInputText(e.target);
             if (!text) return;
@@ -319,6 +331,18 @@ export default definePlugin({
             document.removeEventListener("keydown", this._onKeyDown, true);
             this._onKeyDown = null;
         }
+
+        if (this._onEditStart) {
+            FluxDispatcher.unsubscribe("MESSAGE_START_EDIT", this._onEditStart);
+            this._onEditStart = null;
+        }
+
+        if (this._onEditEnd) {
+            FluxDispatcher.unsubscribe("MESSAGE_END_EDIT", this._onEditEnd);
+            this._onEditEnd = null;
+        }
+
+        this._isEditing = false;
 
         if (!this._originalSend) return;
         MessageActions.sendMessage = this._originalSend;
