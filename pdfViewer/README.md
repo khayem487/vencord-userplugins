@@ -11,11 +11,7 @@ Inline PDF viewer for Discord messages.
 
 ## Demo
 
-Add your GIF here:
-
-```md
-![PdfViewer demo](./demo.gif)
-```
+![PdfViewer preview](./preview.png)
 
 ## Install
 
