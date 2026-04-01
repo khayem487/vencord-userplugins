@@ -12,11 +12,7 @@ Splits oversized messages when sending.
 
 ## Demo
 
-Add your GIF here:
-
-```md
-![SplitLargeMessages demo](./demo.gif)
-```
+![SplitLargeMessages preview](./preview.png)
 
 ## Install
 
