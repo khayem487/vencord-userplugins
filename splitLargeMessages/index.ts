@@ -7,7 +7,7 @@ import { definePluginSettings } from "@api/Settings";
 import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { MessageActions, showToast, Toasts } from "@webpack/common";
+import { MessageActions, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
 
 const settings = definePluginSettings({
     maxMessageLength: {
@@ -122,15 +122,34 @@ function parseCustomSplit(content: string) {
     };
 }
 
-function looksLikeChatInput(target: EventTarget | null) {
+function getChatInputElement(target: EventTarget | null) {
     const el = target as HTMLElement | null;
-    if (!el) return false;
+    if (!el) return null;
 
-    return Boolean(
-        el.closest("[role='textbox']") ||
-        el.closest("[data-slate-editor='true']") ||
-        el.closest("[class*='slateTextArea']")
-    );
+    return el.closest("[role='textbox'], [data-slate-editor='true'], [class*='slateTextArea']") as HTMLElement | null;
+}
+
+function looksLikeChatInput(target: EventTarget | null) {
+    return Boolean(getChatInputElement(target));
+}
+
+function readInputText(target: EventTarget | null) {
+    const input = getChatInputElement(target);
+    if (!input) return "";
+
+    // Slate/contentEditable tends to expose full user-visible text via innerText.
+    return (input.innerText || input.textContent || "")
+        .replace(/\u200B/g, "")
+        .trimEnd();
+}
+
+function clearInputText(target: EventTarget | null) {
+    const input = getChatInputElement(target);
+    if (!input) return;
+
+    input.textContent = "";
+    input.innerHTML = "";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
 }
 
 export default definePlugin({
@@ -141,6 +160,7 @@ export default definePlugin({
 
     _originalSend: null as SendMessage | null,
     _onPaste: null as ((e: ClipboardEvent) => void) | null,
+    _onKeyDown: null as ((e: KeyboardEvent) => void) | null,
 
     async _sendChunks(channelId: string, chunks: string[], data: any, waitForChannelReady?: boolean, options?: any) {
         const original = this._originalSend;
@@ -200,6 +220,43 @@ export default definePlugin({
 
         document.addEventListener("paste", this._onPaste, true);
 
+        this._onKeyDown = async (e: KeyboardEvent) => {
+            if (e.defaultPrevented) return;
+            if (e.key !== "Enter" || e.shiftKey) return;
+            if (!looksLikeChatInput(e.target)) return;
+
+            const text = readInputText(e.target);
+            if (!text) return;
+
+            const maxLen = this.settings.store.maxMessageLength;
+            const parsed = this.settings.store.enableCustomSplitCommand ? parseCustomSplit(text) : null;
+
+            let chunks: string[] | null = null;
+            if (parsed) {
+                chunks = splitByDelimiter(parsed.body, parsed.delimiter, maxLen);
+            } else if (text.length > maxLen) {
+                chunks = splitByEmptyLineOrHardCut(text, maxLen);
+            }
+
+            if (!chunks || chunks.length <= 1) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const channelId = SelectedChannelStore.getChannelId();
+            if (!channelId) return;
+
+            clearInputText(e.target);
+
+            if (this.settings.store.showSplitToast) {
+                showToast(`Splitting message into ${chunks.length} parts`, Toasts.Type.MESSAGE);
+            }
+
+            await this._sendChunks(channelId, chunks, { content: "" }, true, {});
+        };
+
+        document.addEventListener("keydown", this._onKeyDown, true);
+
         MessageActions.sendMessage = (async (channelId: string, data: any, waitForChannelReady?: boolean, options?: any) => {
             const content = typeof data?.content === "string" ? data.content : "";
             const maxLen = this.settings.store.maxMessageLength;
@@ -242,6 +299,11 @@ export default definePlugin({
         if (this._onPaste) {
             document.removeEventListener("paste", this._onPaste, true);
             this._onPaste = null;
+        }
+
+        if (this._onKeyDown) {
+            document.removeEventListener("keydown", this._onKeyDown, true);
+            this._onKeyDown = null;
         }
 
         if (!this._originalSend) return;
