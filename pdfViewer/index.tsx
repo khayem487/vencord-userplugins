@@ -160,6 +160,12 @@ function PdfAttachmentPreview({ attachment }: { attachment: Attachment; }) {
                     canvas.style.width = `${Math.floor(cssViewport.width)}px`;
                     canvas.style.height = "auto";
 
+                    const pageWrap = canvas.parentElement;
+                    if (pageWrap) {
+                        const isOverflow = cssViewport.width > (wrapWidth - 24);
+                        pageWrap.classList.toggle("overflow", isOverflow);
+                    }
+
                     ctx.setTransform(1, 0, 0, 1, 0, 0);
                     ctx.clearRect(0, 0, canvas.width, canvas.height);
                     await pdfPage.render({ canvasContext: ctx, viewport: renderViewport }).promise;
