@@ -172,9 +172,12 @@ export default definePlugin({
     _originalSend: null as SendMessage | null,
     _onPaste: null as ((e: ClipboardEvent) => void) | null,
     _onKeyDown: null as ((e: KeyboardEvent) => void) | null,
+    _onInput: null as ((e: Event) => void) | null,
     _isEditing: false,
     _onEditStart: null as ((payload?: any) => void) | null,
     _onEditEnd: null as ((payload?: any) => void) | null,
+    _counterEl: null as HTMLDivElement | null,
+    _counterHost: null as HTMLElement | null,
 
     async _sendChunks(channelId: string, chunks: string[], data: any, waitForChannelReady?: boolean, options?: any) {
         const original = this._originalSend;
@@ -206,6 +209,82 @@ export default definePlugin({
         }
 
         return lastResult;
+    },
+
+    _removeCounter() {
+        this._counterEl?.remove();
+        this._counterEl = null;
+        this._counterHost = null;
+    },
+
+    _ensureCounter(host: HTMLElement) {
+        if (this._counterEl && this._counterHost === host) return this._counterEl;
+
+        this._removeCounter();
+
+        const el = document.createElement("div");
+        el.style.position = "absolute";
+        el.style.right = "8px";
+        el.style.bottom = "8px";
+        el.style.zIndex = "30";
+        el.style.padding = "6px 8px";
+        el.style.borderRadius = "8px";
+        el.style.background = "var(--background-floating, rgba(0,0,0,.7))";
+        el.style.color = "var(--text-normal, #fff)";
+        el.style.fontSize = "12px";
+        el.style.lineHeight = "1.2";
+        el.style.pointerEvents = "none";
+        el.style.boxShadow = "0 2px 8px rgba(0,0,0,.35)";
+        el.style.display = "none";
+
+        const hostStyle = window.getComputedStyle(host);
+        if (hostStyle.position === "static") {
+            host.style.position = "relative";
+        }
+
+        host.appendChild(el);
+        this._counterEl = el;
+        this._counterHost = host;
+
+        return el;
+    },
+
+    _updateCounter(target: EventTarget | null) {
+        const input = getChatInputElement(target);
+        if (!input) {
+            this._removeCounter();
+            return;
+        }
+
+        const host = input.closest("form, [class*='channelTextArea'], [class*='textArea']") as HTMLElement | null;
+        if (!host) {
+            this._removeCounter();
+            return;
+        }
+
+        const text = readInputText(input);
+        const maxLen = this.settings.store.maxMessageLength;
+
+        let chunks: string[] = [];
+        const parsed = this.settings.store.enableCustomSplitCommand ? parseCustomSplit(text) : null;
+        if (parsed) {
+            chunks = splitByDelimiter(parsed.body, parsed.delimiter, maxLen);
+        } else if (text.length > maxLen) {
+            chunks = splitByEmptyLineOrHardCut(text, maxLen);
+        }
+
+        const overByDiscord = Math.max(0, text.length - 2000);
+        const shouldShow = chunks.length > 1 || overByDiscord > 0;
+        const counter = this._ensureCounter(host);
+
+        if (!shouldShow) {
+            counter.style.display = "none";
+            return;
+        }
+
+        const messageCount = chunks.length > 1 ? chunks.length : Math.ceil(text.length / maxLen);
+        counter.innerHTML = `${messageCount} Messages<br><span style='color:#ff6b6b'>-${overByDiscord}</span>`;
+        counter.style.display = "block";
     },
 
     start() {
@@ -243,6 +322,12 @@ export default definePlugin({
 
         document.addEventListener("paste", this._onPaste, true);
 
+        this._onInput = (e: Event) => {
+            this._updateCounter(e.target);
+        };
+        document.addEventListener("input", this._onInput, true);
+        document.addEventListener("keyup", this._onInput, true);
+
         this._onKeyDown = async (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
             if (e.key !== "Enter" || e.shiftKey) return;
@@ -273,6 +358,7 @@ export default definePlugin({
             if (!channelId) return;
 
             clearInputText(e.target);
+            this._updateCounter(e.target);
 
             if (this.settings.store.showSplitToast) {
                 showToast(`Splitting message into ${chunks.length} parts`, Toasts.Type.MESSAGE);
@@ -331,6 +417,14 @@ export default definePlugin({
             document.removeEventListener("keydown", this._onKeyDown, true);
             this._onKeyDown = null;
         }
+
+        if (this._onInput) {
+            document.removeEventListener("input", this._onInput, true);
+            document.removeEventListener("keyup", this._onInput, true);
+            this._onInput = null;
+        }
+
+        this._removeCounter();
 
         if (this._onEditStart) {
             FluxDispatcher.unsubscribe("MESSAGE_START_EDIT", this._onEditStart);
