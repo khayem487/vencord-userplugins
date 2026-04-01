@@ -66,11 +66,19 @@ function splitByEmptyLineOrHardCut(content: string, maxLen: number) {
 
     while (remaining.length > maxLen) {
         const slice = remaining.slice(0, maxLen);
-        const idx = slice.lastIndexOf("\n\n");
+        const minChunk = Math.max(260, Math.floor(maxLen * 0.12));
+
+        const blankIdx = slice.lastIndexOf("\n\n");
+        const lineIdx = slice.lastIndexOf("\n");
 
         let cut = maxLen;
-        if (idx > Math.floor(maxLen * 0.35)) {
-            cut = idx + 2;
+
+        // Strong preference: split on section breaks (empty line), even if earlier than before.
+        if (blankIdx >= minChunk) {
+            cut = blankIdx + 2;
+        } else if (lineIdx >= Math.max(200, Math.floor(maxLen * 0.3))) {
+            // Fallback: split on newline before hard cutting.
+            cut = lineIdx + 1;
         }
 
         let part = remaining.slice(0, cut).trimEnd();
