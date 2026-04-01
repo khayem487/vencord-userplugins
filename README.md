@@ -5,6 +5,7 @@ Private collection of custom Vencord plugins.
 ## Plugins
 
 - `pdfViewer` — Restored and enhanced PDF preview plugin for Vencord.
+- `splitLargeMessages` — Auto-splits oversized messages into sequential chunks before sending.
 
 ## Structure
 
