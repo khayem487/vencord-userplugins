@@ -7,6 +7,7 @@ import { definePluginSettings } from "@api/Settings";
 import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
+import { findByPropsLazy } from "@webpack";
 import { MessageActions, SelectedChannelStore, showToast, Toasts } from "@webpack/common";
 
 const settings = definePluginSettings({
@@ -51,6 +52,8 @@ const settings = definePluginSettings({
 });
 
 type SendMessage = typeof MessageActions.sendMessage;
+
+const EditStore = findByPropsLazy("isEditing", "isEditingAny");
 
 function sleep(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -232,6 +235,9 @@ export default definePlugin({
             if (e.defaultPrevented) return;
             if (e.key !== "Enter" || e.shiftKey) return;
             if (!looksLikeChatInput(e.target)) return;
+
+            // Never hijack Enter while editing an existing message.
+            if (EditStore?.isEditingAny?.()) return;
 
             const text = readInputText(e.target);
             if (!text) return;
